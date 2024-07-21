@@ -1,0 +1,590 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © StratifyTrade
+
+//@version=5
+indicator("Price Action Volumetric Order Blocks [StratifyTrade]", "StratifyTrade - Price Action Volumetric Order Blocks [1.0]", overlay = true, max_bars_back = 5000, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+
+const color colup = #089981
+const color coldn = #f23645
+
+const string tm = "[Length] Use Length to adjust cordinate of the orderblocks\n[Full] Use whole candle body"
+const string tn = "Mitigation method for when to trigger order blocks"
+const string tj = "Order block Metrics text size" 
+const string ta = 'Display internal buy & sell activity'
+const string ts = 'Show Last number of orderblocks'
+const string gv = "Volumetric Order Blocks"
+
+obshow         = input.bool  (true                , "Show Last"                      ,                                               ts,          '1',         gv)
+oblast         = input.int   (5                   , ""                               ,  0,                   50,                 1 ,     inline = '1', group = gv)
+obupcs         = input.color (color.new(colup, 90), ""                               ,                                                   inline = '1', group = gv)
+obdncs         = input.color (color.new(coldn, 90), ""                               ,                                                   inline = '1', group = gv)
+obshowactivity = input.bool  (true                , "Show Buy/Sell Activity         ",                                               ta,          '2',         gv)
+obactup        = input.color (color.new(colup, 50), ""                               ,                                                   inline = '2', group = gv)
+obactdn        = input.color (color.new(coldn, 50), ""                               ,                                                   inline = '2', group = gv)
+obmode         = input.string("Length"            , "Construction "                  , ["Length",                           "Full"], tm,          '3',         gv)
+len            = input.int   (5                   , ""                               ,  1,                  20,                  1 ,     inline = '3', group = gv)
+obmiti         = input.string("Close"             , "Mitigation Method"              , ["Close",           "Wick",           "Avg"], tn,               group = gv)
+obtxt          = input.string("Normal"            , "Metric Size"                    , ["Tiny", "Small", "Normal", "Large", "Huge"], tj,               group = gv)
+showmetric     = input.bool  (true                , "Show Metrics"                   ,                                                                 group = gv)
+showline       = input.bool  (true                , "Show Mid-Line"                  ,                                                                 group = gv)
+overlap        = input.bool  (true                , "Hide Overlap"                   ,                                                                 group = gv, tooltip = "Most recent order block will be preserved")
+
+blcreated     = input.bool(false                  , "Bullish OB Formed      "        , inline = "Formed"                                             , group = "ANY ALERT")
+brcreated     = input.bool(false                  , "Bearish OB Formed"              , inline = "Formed"                                             , group = "ANY ALERT")
+blmitigated   = input.bool(false                  , "Bullish OB Mitigated   "        , inline = "Mitigated"                                          , group = "ANY ALERT")
+brmitigated   = input.bool(false                  , "Bearish OB Mitigated"           , inline = "Mitigated"                                          , group = "ANY ALERT")
+blinside      = input.bool(false                  , "Price Inside Bullish OB"        , inline = "Inside"                                             , group = "ANY ALERT")
+brinside      = input.bool(false                  , "Price Inside Bearish OB"        , inline = "Inside"                                             , group = "ANY ALERT")
+
+///view sheet
+nobs = input.int(3, "Number of order blocks", minval=1, maxval=5, group="Table")
+input_limit = input.int(20, "Process only last N order blocks", minval=5, group="Table")
+input_limit_calc_bars = input.int(3000, "Process only last N bars", minval=100, group="Table")
+table_text_color = input.color(color.white, "Text color", group="Table")
+table_text_size_ = input.string("Normal", "Text size", ["Tiny", "Small", "Normal", "Large"], group="Table")
+table_pos_ = input.string("Bottom Right", "Table position", ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group="Table")
+
+tf1 = input.timeframe("1", "Timeframe 1", group="Table")
+tf2 = input.timeframe("3", "Timeframe 2", group="Table")
+tf3 = input.timeframe("5", "Timeframe 3", group="Table")
+tf4 = input.timeframe("10", "Timeframe 4", group="Table")
+tf5 = input.timeframe("15", "Timeframe 5", group="Table")
+tf6 = input.timeframe("30", "Timeframe 6", group="Table")
+tf7 = input.timeframe("45", "Timeframe 7", group="Table")
+tf8 = input.timeframe("60", "Timeframe 8", group="Table")
+tf9 = input.timeframe("120", "Timeframe 9", group="Table")
+tf10 = input.timeframe("180", "Timeframe 10", group="Table")
+tf11 = input.timeframe("240", "Timeframe 11", group="Table")
+tf12 = input.timeframe("D", "Timeframe 12", group="Table")
+tf13 = input.timeframe("W", "Timeframe 13", group="Table")
+tf14 = input.timeframe("M", "Timeframe 14", group="Table")
+
+
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+    float v = volume
+    int   i = bar_index
+    int   t = time
+
+type ob
+    float top
+    float btm
+    float avg
+    int   loc
+    color css
+    float vol
+    int   dir
+    int   move
+    int   blPOS
+    int   brPOS
+    int   xlocbl
+    int   xlocbr
+
+type alert
+    bool created   = false
+    bool inside    = false
+    bool mitigated = false
+
+type cross
+    bool reset = false
+
+
+bar          b = bar  .new()
+alert     blal = alert.new()
+alert     bral = alert.new()
+
+var cross blIS = cross.new()
+var cross brIS = cross.new()
+
+
+
+method txSz(string s) =>
+    out = switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+    out
+
+
+method display(ob id, ob[] full, int i) =>
+
+    box.new    (top = id.top, bottom = id.btm, left = id.loc, right = b.t      , border_color = na, bgcolor = id.css, xloc = xloc.bar_time)
+    box.new    (top = id.top, bottom = id.btm, left = b.t   , right = b.t + 1  , border_color = na, bgcolor = id.css, xloc = xloc.bar_time, extend = extend.right)
+
+    if obshowactivity
+
+        box.new(top = id.top, bottom = id.avg, left = id.loc, right = id.xlocbl, border_color = na, bgcolor = obactup, xloc = xloc.bar_time)
+        box.new(top = id.avg, bottom = id.btm, left = id.loc, right = id.xlocbr, border_color = na, bgcolor = obactdn, xloc = xloc.bar_time)
+
+    if showline
+
+        line.new(
+               x1 = id.loc
+             , x2 = b.t
+             , y1 = id.avg
+             , y2 = id.avg
+             , color = color.new(id.css, 0)
+             , xloc = xloc.bar_time
+             , style = line.style_dashed
+             )
+
+
+    if showmetric
+
+        if i == math.min(oblast - 1, full.size() - 1)
+
+            float   tV = 0
+            float[] dV = array.new<float>()
+
+            seq = math.min(oblast - 1, full.size() - 1)
+
+            for j = 0 to seq
+
+                cV = full.get(j)
+
+                tV += cV.vol
+
+                if j == seq
+
+                    for y = 0 to seq
+
+                        dV.push(
+                             math.floor(
+                                 (full.get(y).vol / tV) * 100)
+                         )
+
+                        id = full.get(y)
+
+                        label.new(
+                               b.i + 1
+                             , id.avg
+                             , textcolor = color.new(id.css, 0)
+                             , style = label.style_label_left
+                             , size = obtxt.txSz()
+                             , color = #ffffff00
+                             , text = 
+                                 str.tostring(
+                                     math.round(full.get(y).vol, 3), format = format.volume) + " (" + str.tostring(dV.get(y)) + "%)"
+                                 )
+
+
+method overlap(ob[] id) =>
+
+    if id.size() > 1
+
+        for i = id.size() - 1 to 1
+
+            stuff   = id.get(i)
+            current = id.get(0)
+
+            switch
+
+                stuff.btm > current.btm and stuff.btm < current.top => id.remove(i)
+                stuff.top < current.top and stuff.btm > current.btm => id.remove(i)
+                stuff.top > current.top and stuff.btm < current.btm => id.remove(i)
+                stuff.top < current.top and stuff.top > current.btm => id.remove(i)
+
+
+method umt(ob metric) =>
+
+    switch metric.dir
+
+        1 =>
+
+            switch metric.move
+
+                1 => metric.blPOS := metric.blPOS + 1, metric.move := 2
+                2 => metric.blPOS := metric.blPOS + 1, metric.move := 3
+                3 => metric.brPOS := metric.brPOS + 1, metric.move := 1
+
+        -1 =>
+
+            switch metric.move
+
+                1 => metric.brPOS := metric.brPOS + 1, metric.move := 2
+                2 => metric.brPOS := metric.brPOS + 1, metric.move := 3
+                3 => metric.blPOS := metric.blPOS + 1, metric.move := 1
+
+    if (b.t - b.t[1]) == (b.t[1] - b.t[2])
+
+        metric.xlocbl := metric.loc + (b.t - b.t[1]) * metric.blPOS
+        metric.xlocbr := metric.loc + (b.t - b.t[1]) * metric.brPOS
+
+f_overlap(num_, price_, bt_, tb_, dir_) =>
+    if num_.size() > 1
+        for i = num_.size() - 2 to 0
+            sbtm = dir_ == 1 ? bt_.get(i) : tb_.get(i)
+            cbtm = dir_ == 1 ? bt_.get(num_.size() - 1) : tb_.get(num_.size() - 1)
+            stop = dir_ == 1 ? tb_.get(i) : bt_.get(i)
+            ctop = dir_ == 1 ? tb_.get(num_.size() - 1) : bt_.get(num_.size() - 1)
+
+            if (sbtm > cbtm and sbtm < ctop) or (stop < ctop and sbtm > cbtm) or (stop > ctop and sbtm < cbtm) or (stop < ctop and stop > cbtm)
+                num_.remove(i)
+                price_.remove(i)
+                bt_.remove(i)
+                tb_.remove(i)
+
+// Same as the "fnOB" but uses less memory so it can be used in the request.security function
+fnOB_req() =>
+    var num_buy = array.new<int>(0, na)
+    var num_sell = array.new<int>(0, na)
+    var price_buy = array.new<float>(0, na)
+    var price_sell = array.new<float>(0, na)
+    var bt_buy = array.new<float>(0, na)
+    var bt_sell = array.new<float>(0, na)
+    var tb_buy = array.new<float>(0, na)
+    var tb_sell = array.new<float>(0, na)
+    
+    var int dir = 0
+
+    up = ta.highest  (len)
+    dn = ta.lowest   (len)
+    pv = ta.pivothigh(volume, len, len)
+
+    dir := high[len] > up ? -1 : low[len] < dn ? 1 : dir[1]
+
+    atr = ta.atr(len)
+
+    btmP =  obmode == "Length" ? (high[len] - 1 * atr[len]) < low[len] ? low[len] : (high[len] - 1 * atr[len]) : low[len]
+    topP =  obmode == "Length" ? (low[len] + 1 * atr[len]) > high[len] ? high[len] : (low[len] + 1 * atr[len]) : high[len]
+
+    if pv
+        if dir == 1
+            if num_buy.size() >= input_limit
+                num_buy.shift()
+                price_buy.shift()
+                bt_buy.shift()
+                tb_buy.shift()
+            num_buy.push(math.round(volume[len]))
+            price_buy.push(math.avg(topP, low[len]))
+            bt_buy.push(low[len])
+            tb_buy.push(topP)
+        if dir == -1
+            if num_sell.size() >= input_limit
+                num_sell.shift()
+                price_sell.shift()
+                bt_sell.shift()
+                tb_sell.shift()
+            num_sell.push(math.round(volume[len]))
+            price_sell.push(math.avg(btmP, high[len]))
+            bt_sell.push(high[len])
+            tb_sell.push(btmP)
+
+    buy_size_ = num_buy.size()
+    if buy_size_ > 0 and barstate.isconfirmed
+        int id_ = na
+        for i = buy_size_ - 1 to 0
+            float btm = bt_buy.get(i)
+            float avg = price_buy.get(i)
+            for j = 0 to len - 1
+                if obmiti == "Close" ? math.min(close[j], open[j]) < btm : obmiti == "Wick" ? low[j] < btm : obmiti == "Avg" ? low[j] < avg : na
+                    id_ := i
+                    break
+        if not na(id_)
+            num_buy.remove(id_)
+            price_buy.remove(id_)
+            bt_buy.remove(id_)
+            tb_buy.remove(id_)
+
+    sell_size_ = num_sell.size()
+    if sell_size_ > 0 and barstate.isconfirmed
+        int id1_ = na
+        for i = sell_size_ - 1 to 0
+            float top = bt_sell.get(i)
+            float avg = price_sell.get(i) 
+            for j = 0 to len - 1
+                if obmiti == "Close" ? math.max(close[j], open[j]) > top : obmiti == "Wick" ? high[j] > top : obmiti == "Avg" ? high[j] > avg : na
+                    id1_ := i
+                    break
+        if not na(id1_)
+            num_sell.remove(id1_)
+            price_sell.remove(id1_)
+            bt_sell.remove(id1_)
+            tb_sell.remove(id1_)
+
+    if overlap
+        f_overlap(num_buy, price_buy, bt_buy, tb_buy, 1)
+        f_overlap(num_sell, price_sell, bt_sell, tb_sell, -1)
+
+    [num_buy, price_buy, num_sell, price_sell]
+
+ntfs = 14
+
+var string table_text_size = na
+var string table_pos = na
+
+if barstate.islastconfirmedhistory
+    table_text_size := switch table_text_size_
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+    table_pos := switch table_pos_
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right" => position.bottom_right
+
+[num_buy1, price_buy1, num_sell1, price_sell1] = request.security(syminfo.tickerid, tf1, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy2, price_buy2, num_sell2, price_sell2] = request.security(syminfo.tickerid, tf2, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy3, price_buy3, num_sell3, price_sell3] = request.security(syminfo.tickerid, tf3, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy4, price_buy4, num_sell4, price_sell4] = request.security(syminfo.tickerid, tf4, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy5, price_buy5, num_sell5, price_sell5] = request.security(syminfo.tickerid, tf5, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy6, price_buy6, num_sell6, price_sell6] = request.security(syminfo.tickerid, tf6, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy7, price_buy7, num_sell7, price_sell7] = request.security(syminfo.tickerid, tf7, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy8, price_buy8, num_sell8, price_sell8] = request.security(syminfo.tickerid, tf8, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy9, price_buy9, num_sell9, price_sell9] = request.security(syminfo.tickerid, tf9, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy10, price_buy10, num_sell10, price_sell10] = request.security(syminfo.tickerid, tf10, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy11, price_buy11, num_sell11, price_sell11] = request.security(syminfo.tickerid, tf11, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy12, price_buy12, num_sell12, price_sell12] = request.security(syminfo.tickerid, tf12, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy13, price_buy13, num_sell13, price_sell13] = request.security(syminfo.tickerid, tf13, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+[num_buy14, price_buy14, num_sell14, price_sell14] = request.security(syminfo.tickerid, tf14, fnOB_req(), calc_bars_count=input_limit_calc_bars)
+
+var data = matrix.new<string>(0, 1 + nobs * 2 * 2)
+
+nrows_ = data.rows()
+if nrows_ >= 1
+    for i = data.rows() - 1 to 0
+        data.remove_row(i)
+
+tfformat(tf) =>
+    if str.length(tf) >= 1
+        sl = str.length(tf)
+        ew_ = str.substring(tf, sl - 1, sl)
+        switch ew_
+            "M" => str.replace(tf, "M", " MONTH")
+            "W" => str.replace(tf, "W", " WEEK")
+            "D" => str.replace(tf, "D", " DAY")
+            "S" => tf
+            => (str.tonumber(tf) / 60 > 0 and not str.contains(str.tostring(str.tonumber(tf) / 60), ".")) ? (str.tostring(int(str.tonumber(tf) / 60)) + " HR") : (tf + " MIN")
+    else
+        "Chart"
+
+f_add(tf_, num_buy_, price_buy_, num_sell_, price_sell_) =>
+    arr1 = array.from(tfformat(tf_))
+    sell_size_ = num_sell_.size()
+    for i = 0 to nobs - 1
+        index_ = sell_size_ - nobs + i
+        if index_ < sell_size_ and index_ >= 0
+            arr1.push(str.tostring(num_sell_.get(index_)))
+            arr1.push(str.tostring(math.round_to_mintick(price_sell_.get(index_))))
+        else
+            arr1.push("-")
+            arr1.push("-")
+    buy_size_ = num_buy_.size()
+    for i = 0 to nobs - 1
+        index_ = buy_size_ - 1 - i
+        if index_ < buy_size_ and index_ >= 0
+            arr1.push(str.tostring(num_buy_.get(index_)))
+            arr1.push(str.tostring(math.round_to_mintick(price_buy_.get(index_))))
+        else
+            arr1.push("-")
+            arr1.push("-")
+    data.add_row(array_id=arr1)
+
+if barstate.islast
+    f_add(tf1, num_buy1, price_buy1, num_sell1, price_sell1)
+    f_add(tf2, num_buy2, price_buy2, num_sell2, price_sell2)
+    f_add(tf3, num_buy3, price_buy3, num_sell3, price_sell3)
+    f_add(tf4, num_buy4, price_buy4, num_sell4, price_sell4)
+    f_add(tf5, num_buy5, price_buy5, num_sell5, price_sell5)
+    f_add(tf6, num_buy6, price_buy6, num_sell6, price_sell6)
+    f_add(tf7, num_buy7, price_buy7, num_sell7, price_sell7)
+    f_add(tf8, num_buy8, price_buy8, num_sell8, price_sell8)
+    f_add(tf9, num_buy9, price_buy9, num_sell9, price_sell9)
+    f_add(tf10, num_buy10, price_buy10, num_sell10, price_sell10)
+    f_add(tf11, num_buy11, price_buy11, num_sell11, price_sell11)
+    f_add(tf12, num_buy12, price_buy12, num_sell12, price_sell12)
+    f_add(tf13, num_buy13, price_buy13, num_sell13, price_sell13)
+    f_add(tf14, num_buy14, price_buy14, num_sell14, price_sell14)
+
+
+fnOB() =>
+
+    var ob[] blob = array.new<ob>()
+    var ob[] brob = array.new<ob>()
+
+    var int dir = 0
+
+    up = ta.highest  (     len     )
+    dn = ta.lowest   (     len     )
+    pv = ta.pivothigh(b.v, len, len)
+
+    dir := b.h[len] > up ? -1 : b.l[len] < dn ? 1 : dir[1]
+
+    atr = ta.atr(len)
+
+    btmP =  obmode == "Length" ? (b.h[len] - 1 * atr[len]) < b.l[len] ? b.l[len] : (b.h[len] - 1 * atr[len]) : b.l[len]
+
+    topP =  obmode == "Length" ? (b.l[len] + 1 * atr[len]) > b.h[len] ? b.h[len] : (b.l[len] + 1 * atr[len]) : b.h[len]
+
+    if pv and dir == 1
+
+        blob.unshift(
+             ob.new(
+                   topP
+                 , b.l[len]
+                 , math.avg(topP, b.l[len])
+                 , b.t[len]
+                 , obupcs
+                 , b.v[len]
+                 , b.c[len] > b.o[len] ? 1 : -1
+                 , 1
+                 , 0
+                 , 0
+                 , b.t[len]
+                  )
+                 )
+
+        blal.created := true
+        blIS.reset   := false
+
+    if pv and dir == -1
+
+        brob.unshift(
+             ob.new(
+                   b.h[len]
+                 , btmP
+                 , math.avg(btmP, b.h[len])
+                 , b.t[len]
+                 , obdncs
+                 , b.v[len]
+                 , b.c[len] > b.o[len] ? 1 : -1
+                 , 1
+                 , 0
+                 , 0
+                 , b.t[len]
+                  )
+                 )
+
+        bral.created := true
+        brIS.reset   := false
+
+    if blob.size() > 0 and barstate.isconfirmed
+
+        for [i, ob] in blob
+
+            for j = 0 to len - 1
+
+                if obmiti == "Close" ? math.min(b.c[j], b.o[j]) < ob.btm : obmiti == "Wick" ? b.l < ob.btm : obmiti == "Avg" ? b.l < ob.avg : na
+
+                    blob.remove(i)
+                    blal.mitigated := true
+                    break
+
+    if brob.size() > 0 and barstate.isconfirmed
+
+        for[i, ob] in brob
+
+            for j = 0 to len - 1
+
+                if obmiti == "Close" ? math.max(b.c[j], b.o[j]) > ob.top : obmiti == "Wick" ? b.h > ob.top : obmiti == "Avg" ? b.h > ob.avg : na
+
+                    brob.remove(i)
+                    bral.mitigated := true
+                    break
+
+    if blob.size() > 0
+
+        for [i, metric] in blob
+
+            metric.umt()
+
+    if brob.size() > 0
+
+        for [i, metric] in brob
+
+            metric.umt()
+
+    if overlap
+
+        blob.overlap()
+        brob.overlap()
+
+    if barstate.isconfirmed
+
+        if blob.size() > 0
+
+            ob = blob.get(0)
+
+            if low  < ob.top and blIS.reset == false
+                blal.inside := true
+                blIS.reset  := true
+
+        if brob.size() > 0
+
+            ob = brob.get(0)
+
+            if high > ob.btm and brIS.reset == false
+                bral.inside := true
+                brIS.reset  := true
+
+    if barstate.islast
+
+        for bx in box.all
+            bx.delete()
+        
+        for ln in line.all
+            ln.delete()
+
+        for lb in label.all
+            lb.delete()
+        
+        if blob.size() > 0
+            for i = 0 to math.min(oblast - 1, blob.size() - 1)
+                blob.get(i).display(blob, i)
+
+        if brob.size() > 0
+            for i = 0 to math.min(oblast - 1, brob.size() - 1)
+                brob.get(i).display(brob, i)
+
+
+sheetView() => 
+    var table t = na
+    if barstate.islastconfirmedhistory
+        t := table.new(table_pos, 1 + nobs * 2 * 2, 2 + ntfs, #020202, #757575, 1, #757575, 0)
+
+        t.merge_cells(0, 0, 0, 1)
+        t.cell(0, 0, "Interval", text_color=table_text_color, text_size=table_text_size)
+
+    if not na(t)
+        for i = 2 to 1 + ntfs
+            for j = 0 to nobs * 2 * 2
+                t.cell_set_text(j, i, "+")
+
+    // Columns
+    for i = 0 to nobs * 2 - 1   
+        int scol = 1 + i * 2
+
+        if barstate.islastconfirmedhistory
+            t.merge_cells(scol, 0, scol + 1, 0)
+            t.cell(scol, 0, (i < nobs ? "SELL" : "BUY") + " OB-" + str.tostring(i < nobs ? (nobs - i) : (i - nobs + 1)), bgcolor=#020202, text_color=table_text_color, text_size=table_text_size)
+
+            t.cell(scol, 1, "Number", bgcolor=#020202, text_color=table_text_color, text_size=table_text_size)
+            t.cell(scol + 1, 1, "Price", bgcolor=#020202, text_color=table_text_color, text_size=table_text_size)
+
+        // Rows
+        if data.rows() > 0
+            for j = 1 to ntfs
+                color col_ = j % 2 != 0 ? #454545 : #020202
+                if i == 0
+                    t.cell(0, 1 + j, data.get(j - 1, 0), bgcolor=col_, text_color=table_text_color, text_size=table_text_size, text_halign=text.align_left)
+                t.cell(scol, 1 + j, data.get(j - 1, scol), bgcolor=col_, text_color=table_text_color, text_size=table_text_size, text_halign=text.align_right)
+                t.cell(scol + 1, 1 + j, data.get(j - 1, scol + 1), bgcolor=col_, text_color=table_text_color, text_size=table_text_size, text_halign=text.align_right)
+
+
+if obshow
+    fnOB()
+    sheetView()
+
