@@ -14,6 +14,9 @@
 
 ![image](https://github.com/harryguiacorn/TradingView-Proprietary-Indicators/assets/1398153/c778b2de-6660-490e-8127-7ecf9bfddfc0)
 
+## Price Action Volumetric Order Blocks [StratifyTrade] ##
+https://github.com/user-attachments/assets/290d66c4-edb3-4345-8211-8d328b262403
+
 ## Kijun Arrow ##
 This indicator places an arrow below or above the candlestick when the Kijun-sen changes direction. The remaining elements use standard Ichimoku Cloud settings. (see chart below)
 
